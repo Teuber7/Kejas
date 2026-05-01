@@ -140,31 +140,33 @@ export function calculateRoundScores(
   return scores
 }
 
-// Check if a card can be played (must follow suit, then trump, then anything)
+// Check if a card can be played
+// Leader (no leadSuit): must play trump if they have it
+// Follower: must follow lead suit if possible; if not, any card
 export function canPlayCard(
   card: Card,
   hand: Card[],
   leadSuit: Suit | null,
   trumpSuit?: Suit | null
 ): boolean {
-  // If no lead suit (first card of trick), any card can be played
-  if (!leadSuit) return true
+  if (!leadSuit) {
+    // I am the leader — must play trump if I have it
+    if (trumpSuit) {
+      const hasTrump = hand.some(c => c.suit === trumpSuit)
+      if (hasTrump) {
+        return card.suit === trumpSuit
+      }
+    }
+    return true
+  }
 
-  // If player has lead suit, must follow suit
+  // I am a follower — must follow lead suit if possible
   const hasLeadSuit = hand.some(c => c.suit === leadSuit)
   if (hasLeadSuit) {
     return card.suit === leadSuit
   }
 
-  // Player doesn't have lead suit — must play trump if available
-  if (trumpSuit && trumpSuit !== leadSuit) {
-    const hasTrump = hand.some(c => c.suit === trumpSuit)
-    if (hasTrump) {
-      return card.suit === trumpSuit
-    }
-  }
-
-  // No lead suit and no trump — any card can be played
+  // Can't follow suit — any card can be played
   return true
 }
 
