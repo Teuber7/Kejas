@@ -42,6 +42,7 @@ export default function GamePage() {
   const initializedRef = useRef(false)
   const dealtForRoundRef = useRef(0)
   const finishedHandledRef = useRef(false)
+  const trickResolveKeyRef = useRef<string>("")
 
   const fetchGameData = useCallback(async () => {
     // Fetch room
@@ -238,6 +239,137 @@ export default function GamePage() {
     return () => clearInterval(interval)
   }, [room, user, fetchGameData])
 
+  // Host-only: resolve a completed trick after 1.5s (so all players can see the cards)
+  useEffect(() => {
+    if (!gameState || !user || !room || loading) return
+    if (user.id !== room.host_id) return
+    if (gameState.current_turn_player_id !== null) return
+
+    const currentTrick = (gameState.current_trick || []) as PlayedCard[]
+    const playerIds = players.map(p => p.player_id)
+
+    const isCompleteTrick =
+      gameState.current_phase === "playing" && currentTrick.length === playerIds.length
+    const isCompleteTiebreak =
+      gameState.current_phase === "tiebreaking" &&
+      currentTrick.length > 0 &&
+      currentTrick.length === ((gameState.tiebreak_players as string[]) || []).length
+
+    if (!isCompleteTrick && !isCompleteTiebreak) return
+
+    const trickKey = currentTrick.map(p => p.card.id).join(",")
+
+    const timer = setTimeout(async () => {
+      if (trickResolveKeyRef.current === trickKey) return
+      trickResolveKeyRef.current = trickKey
+
+      const leadSuit = gameState.lead_suit as Suit
+
+      if (isCompleteTiebreak) {
+        const stillTied = findTiedPlayers(currentTrick, gameState.trump_suit as Suit | null)
+
+        if (stillTied) {
+          const newTiedInOrder = playerIds.filter(id => stillTied.includes(id))
+          await supabase.from("game_state").update({
+            current_trick: [],
+            tiebreak_players: newTiedInOrder,
+            current_turn_player_id: newTiedInOrder[0],
+            lead_suit: null
+          }).eq("id", gameState.id)
+        } else {
+          const winnerId = determineTrickWinner(currentTrick, gameState.trump_suit as Suit, leadSuit)
+          const newTricksWon = { ...gameState.tricks_won }
+          newTricksWon[winnerId] = (newTricksWon[winnerId] || 0) + 1
+          const tricksPlayed = gameState.tricks_played + 1
+          const roundComplete = tricksPlayed === gameState.cards_per_round
+
+          if (roundComplete) {
+            const roundScores = calculateRoundScores(gameState.predictions || {}, newTricksWon)
+            const newTotalScores = { ...gameState.total_scores }
+            for (const [pid, score] of Object.entries(roundScores)) {
+              newTotalScores[pid] = (newTotalScores[pid] || 0) + score
+            }
+            const gameFinished = gameState.current_round + 1 > 14
+            await supabase.from("game_state").update({
+              current_phase: gameFinished ? "finished" : "scoring",
+              current_trick: [],
+              tiebreak_players: null,
+              tricks_played: tricksPlayed,
+              tricks_won: newTricksWon,
+              round_scores: roundScores,
+              total_scores: newTotalScores
+            }).eq("id", gameState.id)
+          } else {
+            await supabase.from("game_state").update({
+              current_phase: "playing",
+              current_trick: [],
+              tiebreak_players: null,
+              tricks_played: tricksPlayed,
+              tricks_won: newTricksWon,
+              current_turn_player_id: winnerId,
+              lead_suit: null
+            }).eq("id", gameState.id)
+          }
+        }
+      } else {
+        // Normal completed trick
+        const tiedPlayers = findTiedPlayers(currentTrick, gameState.trump_suit as Suit | null)
+
+        if (tiedPlayers) {
+          const tiedInOrder = playerIds.filter(id => tiedPlayers.includes(id))
+          await supabase.from("game_state").update({
+            current_phase: "tiebreaking",
+            current_trick: [],
+            tiebreak_players: tiedInOrder,
+            current_turn_player_id: tiedInOrder[0],
+            lead_suit: null
+          }).eq("id", gameState.id)
+        } else {
+          const winnerId = determineTrickWinner(currentTrick, gameState.trump_suit as Suit, leadSuit)
+          const newTricksWon = { ...gameState.tricks_won }
+          newTricksWon[winnerId] = (newTricksWon[winnerId] || 0) + 1
+          const tricksPlayed = gameState.tricks_played + 1
+          const roundComplete = tricksPlayed === gameState.cards_per_round
+
+          if (roundComplete) {
+            const roundScores = calculateRoundScores(gameState.predictions || {}, newTricksWon)
+            const newTotalScores = { ...gameState.total_scores }
+            for (const [pid, score] of Object.entries(roundScores)) {
+              newTotalScores[pid] = (newTotalScores[pid] || 0) + score
+            }
+            const gameFinished = gameState.current_round + 1 > 14
+            await supabase.from("game_state").update({
+              current_trick: [],
+              tricks_played: tricksPlayed,
+              tricks_won: newTricksWon,
+              round_scores: roundScores,
+              total_scores: newTotalScores,
+              current_phase: gameFinished ? "finished" : "scoring"
+            }).eq("id", gameState.id)
+          } else {
+            await supabase.from("game_state").update({
+              current_trick: [],
+              tricks_played: tricksPlayed,
+              tricks_won: newTricksWon,
+              current_turn_player_id: winnerId,
+              lead_suit: null
+            }).eq("id", gameState.id)
+          }
+        }
+      }
+
+      channelRef.current?.send({
+        type: "broadcast",
+        event: "game_update",
+        payload: { type: "trick_resolved" }
+      })
+
+      await fetchGameData()
+    }, 1500)
+
+    return () => clearTimeout(timer)
+  }, [gameState, players, user, room, loading, fetchGameData, supabase])
+
   // Host-only: deal new cards when any player ends a round (phase = "scoring")
   useEffect(() => {
     if (!gameState || !user || !room || loading) return
@@ -385,54 +517,12 @@ export default function GamePage() {
       const leadSuit = trickSoFar.length === 0 ? card.suit : gameState.lead_suit
 
       if (newTrick.length === tiedPlayers.length) {
-        // All tied players played — check for another tie
-        const stillTied = findTiedPlayers(newTrick, gameState.trump_suit as Suit | null)
-
-        if (stillTied) {
-          // Another tie: new tiebreak with the subset, in seat order
-          const newTiedInOrder = playerIds.filter(id => stillTied.includes(id))
-          await supabase.from("game_state").update({
-            current_trick: [],
-            tiebreak_players: newTiedInOrder,
-            current_turn_player_id: newTiedInOrder[0],
-            lead_suit: null
-          }).eq("id", gameState.id)
-        } else {
-          // Tiebreak resolved — determine winner and continue normally
-          const winnerId = determineTrickWinner(newTrick, gameState.trump_suit as Suit, leadSuit as Suit)
-          const newTricksWon = { ...gameState.tricks_won }
-          newTricksWon[winnerId] = (newTricksWon[winnerId] || 0) + 1
-          const tricksPlayed = gameState.tricks_played + 1
-          const roundComplete = tricksPlayed === gameState.cards_per_round
-
-          if (roundComplete) {
-            const roundScores = calculateRoundScores(gameState.predictions || {}, newTricksWon)
-            const newTotalScores = { ...gameState.total_scores }
-            for (const [pid, score] of Object.entries(roundScores)) {
-              newTotalScores[pid] = (newTotalScores[pid] || 0) + score
-            }
-            const gameFinished = gameState.current_round + 1 > 14
-            await supabase.from("game_state").update({
-              current_phase: gameFinished ? "finished" : "scoring",
-              current_trick: [],
-              tiebreak_players: null,
-              tricks_played: tricksPlayed,
-              tricks_won: newTricksWon,
-              round_scores: roundScores,
-              total_scores: newTotalScores
-            }).eq("id", gameState.id)
-          } else {
-            await supabase.from("game_state").update({
-              current_phase: "playing",
-              current_trick: [],
-              tiebreak_players: null,
-              tricks_played: tricksPlayed,
-              tricks_won: newTricksWon,
-              current_turn_player_id: winnerId,
-              lead_suit: null
-            }).eq("id", gameState.id)
-          }
-        }
+        // All tied players played — show trick, host resolves after delay
+        await supabase.from("game_state").update({
+          current_trick: newTrick,
+          lead_suit: leadSuit,
+          current_turn_player_id: null
+        }).eq("id", gameState.id)
       } else {
         // Next tied player's turn
         const nextTiedPlayer = tiedPlayers[tiedPlayers.indexOf(user.id) + 1]
@@ -451,52 +541,12 @@ export default function GamePage() {
       const trickComplete = newTrick.length === playerIds.length
 
       if (trickComplete) {
-        // Check for tie before determining winner
-        const tiedPlayers = findTiedPlayers(newTrick, gameState.trump_suit as Suit | null)
-
-        if (tiedPlayers) {
-          // Enter tiebreaking phase — tied players play again
-          const tiedInOrder = playerIds.filter(id => tiedPlayers.includes(id))
-          await supabase.from("game_state").update({
-            current_phase: "tiebreaking",
-            current_trick: [],
-            tiebreak_players: tiedInOrder,
-            current_turn_player_id: tiedInOrder[0],
-            lead_suit: null
-          }).eq("id", gameState.id)
-        } else {
-          // Clear winner
-          const winnerId = determineTrickWinner(newTrick, gameState.trump_suit as Suit, leadSuit as Suit)
-          const newTricksWon = { ...gameState.tricks_won }
-          newTricksWon[winnerId] = (newTricksWon[winnerId] || 0) + 1
-          const tricksPlayed = gameState.tricks_played + 1
-          const roundComplete = tricksPlayed === gameState.cards_per_round
-
-          if (roundComplete) {
-            const roundScores = calculateRoundScores(gameState.predictions || {}, newTricksWon)
-            const newTotalScores = { ...gameState.total_scores }
-            for (const [pid, score] of Object.entries(roundScores)) {
-              newTotalScores[pid] = (newTotalScores[pid] || 0) + score
-            }
-            const gameFinished = gameState.current_round + 1 > 14
-            await supabase.from("game_state").update({
-              current_trick: [],
-              tricks_played: tricksPlayed,
-              tricks_won: newTricksWon,
-              round_scores: roundScores,
-              total_scores: newTotalScores,
-              current_phase: gameFinished ? "finished" : "scoring"
-            }).eq("id", gameState.id)
-          } else {
-            await supabase.from("game_state").update({
-              current_trick: [],
-              tricks_played: tricksPlayed,
-              tricks_won: newTricksWon,
-              current_turn_player_id: winnerId,
-              lead_suit: null
-            }).eq("id", gameState.id)
-          }
-        }
+        // Show complete trick to all players, host resolves after delay
+        await supabase.from("game_state").update({
+          current_trick: newTrick,
+          lead_suit: leadSuit,
+          current_turn_player_id: null
+        }).eq("id", gameState.id)
       } else {
         // Trick still in progress
         const nextPlayerId = playerIds[(playerIds.indexOf(user.id) + 1) % playerIds.length]

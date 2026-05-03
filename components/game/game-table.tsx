@@ -158,6 +158,7 @@ export function GameTable({
               playedCards={currentTrick}
               playerCount={playerOrder.length}
               currentPlayerId={currentUserId}
+              players={players}
             />
           )}
           
@@ -213,6 +214,15 @@ export function GameTable({
         />
       </div>
 
+      {/* Trick complete - showing cards before resolving */}
+      {!gameState.current_turn_player_id && currentTrick.length > 0 && (
+        <div className="absolute bottom-44 left-1/2 -translate-x-1/2">
+          <div className="px-4 py-2 bg-muted text-muted-foreground rounded-full text-sm font-medium">
+            Mostrando truco...
+          </div>
+        </div>
+      )}
+
       {/* Turn indicator */}
       {isMyTurn && (
         <div className="absolute bottom-44 left-1/2 -translate-x-1/2">
@@ -221,7 +231,7 @@ export function GameTable({
           </div>
         </div>
       )}
-      {isTiebreaking && !isMyTurn && (
+      {isTiebreaking && !isMyTurn && gameState.current_turn_player_id && (
         <div className="absolute bottom-44 left-1/2 -translate-x-1/2">
           <div className="px-4 py-2 bg-orange-500/70 text-white rounded-full text-sm font-medium">
             ¡Desempate en curso!

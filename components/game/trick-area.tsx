@@ -1,91 +1,60 @@
 "use client"
 
 import { cn } from "@/lib/utils"
-import { SpanishCard, EmptyCardSlot } from "./spanish-card"
-import type { PlayedCard } from "@/lib/types"
+import { SpanishCard } from "./spanish-card"
+import type { PlayedCard, Profile } from "@/lib/types"
 
 interface TrickAreaProps {
   playedCards: PlayedCard[]
   playerCount: number
   currentPlayerId?: string
-  winningPlayerId?: string
+  players?: Profile[]
   className?: string
-}
-
-// Position cards in a circle around the center
-const getCardPosition = (index: number, total: number, isCurrentPlayer: boolean) => {
-  // For the current player, place at bottom. Others arranged around.
-  if (isCurrentPlayer) {
-    return { x: 0, y: 40, rotation: 0 }
-  }
-
-  // Distribute other players around
-  const angle = ((index / (total - 1)) * 180 - 90) * (Math.PI / 180)
-  const radius = 60
-  return {
-    x: Math.cos(angle) * radius,
-    y: Math.sin(angle) * radius - 20,
-    rotation: (index - (total - 1) / 2) * 15
-  }
 }
 
 export function TrickArea({
   playedCards,
   playerCount,
   currentPlayerId,
-  winningPlayerId,
+  players,
   className
 }: TrickAreaProps) {
-  // Create slots for all players
-  const slots = Array.from({ length: playerCount }).map((_, i) => {
-    const playedCard = playedCards[i]
-    const isCurrentPlayer = playedCard?.playerId === currentPlayerId
-    const isWinning = playedCard?.playerId === winningPlayerId
-    const position = getCardPosition(i, playerCount, isCurrentPlayer)
-
-    return {
-      index: i,
-      playedCard,
-      position,
-      isWinning
-    }
-  })
+  if (playedCards.length === 0) {
+    return (
+      <div className={cn(
+        "flex items-center justify-center rounded-xl",
+        "bg-secondary/30 border border-border/30",
+        "w-56 h-28",
+        className
+      )}>
+        <span className="text-muted-foreground text-sm">Mesa</span>
+      </div>
+    )
+  }
 
   return (
-    <div className={cn("relative w-64 h-48 flex items-center justify-center", className)}>
-      {/* Background felt texture */}
-      <div className="absolute inset-0 rounded-full bg-secondary/30 border border-border/30" />
-      
-      {/* Played cards */}
-      {slots.map(({ index, playedCard, position, isWinning }) => (
-        <div
-          key={index}
-          className="absolute transition-all duration-300"
-          style={{
-            transform: `translate(${position.x}px, ${position.y}px) rotate(${position.rotation}deg)`,
-            zIndex: playedCard ? 10 + index : 0
-          }}
-        >
-          {playedCard ? (
-            <div className={cn(isWinning && "ring-2 ring-primary rounded-lg")}>
-              <SpanishCard
-                card={playedCard.card}
-                size="md"
-                disabled
-              />
-            </div>
-          ) : (
-            <EmptyCardSlot size="md" />
-          )}
-        </div>
-      ))}
+    <div className={cn(
+      "flex flex-wrap items-center justify-center gap-3 p-3",
+      "rounded-xl bg-secondary/30 border border-border/30",
+      "min-h-[112px]",
+      className
+    )}>
+      {playedCards.map(({ playerId, card }) => {
+        const isMe = playerId === currentPlayerId
+        const playerName = players?.find(p => p.id === playerId)?.display_name
+        const label = isMe ? "Tú" : playerName ?? null
 
-      {/* Center indicator */}
-      {playedCards.length === 0 && (
-        <div className="absolute text-muted-foreground text-sm">
-          Mesa
-        </div>
-      )}
+        return (
+          <div key={`${playerId}-${card.id}`} className="flex flex-col items-center gap-0.5">
+            <SpanishCard card={card} size="sm" disabled />
+            {label && (
+              <span className="text-[0.6rem] text-muted-foreground leading-none truncate max-w-[48px] text-center">
+                {label}
+              </span>
+            )}
+          </div>
+        )
+      })}
     </div>
   )
 }
